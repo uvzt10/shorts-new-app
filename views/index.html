@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Short Maker – صانع الفيديوهات القصيرة</title>
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide icons for nice icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Google font -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    /* simple transition classes */
+    .fade-enter { opacity: 0; }
+    .fade-enter-active { transition: opacity .3s ease-in; opacity: 1; }
+    .fade-leave { opacity: 1; }
+    .fade-leave-active { transition: opacity .2s ease-out; opacity: 0; }
+  </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+  <div class="max-w-4xl mx-auto p-6">
+    <!-- Header -->
+    <h1 class="text-3xl md:text-4xl font-extrabold text-center mb-8 text-indigo-700">Short&nbsp;Maker – صانع الفيديوهات القصيرة</h1>
+
+    <!-- Message box -->
+    <div id="message-box" class="hidden p-3 mb-4 rounded-xl text-center font-semibold"></div>
+
+    <!-- Navigation -->
+    <div class="flex justify-center mb-6 space-x-4 rtl:space-x-reverse">
+      <button id="nav-home" class="px-4 py-2 rounded-lg text-sm font-bold transition" onclick="setMode('home')">الرئيسية</button>
+      <button id="nav-auto" class="px-4 py-2 rounded-lg text-sm font-bold transition" onclick="setMode('auto')">التلقائي</button>
+      <button id="nav-manual" class="px-4 py-2 rounded-lg text-sm font-bold transition" onclick="setMode('manual')">اليدوي</button>
+      <button id="nav-settings" class="px-4 py-2 rounded-lg text-sm font-bold transition" onclick="setMode('settings')">الإعدادات</button>
+    </div>
+
+    <!-- Sections -->
+    <div id="home-section" class="hidden">
+      <div class="bg-white rounded-2xl shadow p-6">
+        <h2 class="text-2xl font-bold mb-3 text-indigo-700">مرحباً بك في Short&nbsp;Maker!</h2>
+        <p class="text-sm text-gray-600 leading-relaxed mb-4">
+          هذه الأداة تساعدك على إنشاء فيديوهات قصيرة جذابة بتقنية ثلاثية الأبعاد، مع إمكانية النشر التلقائي أو اليدوي على YouTube. اختر الوضع الذي يناسبك وابدأ الإبداع.
+        </p>
+        <p class="text-sm text-gray-500">
+          آخر حالة: <span id="status-log">__STATUS__</span>
+        </p>
+      </div>
+    </div>
+
+    <div id="auto-section" class="hidden">
+      <div class="bg-white rounded-2xl shadow p-6">
+        <h2 class="text-2xl font-bold mb-4 text-indigo-700">النشر التلقائي</h2>
+        <div class="mb-4">
+          <label class="block mb-1 text-sm font-medium text-gray-700">وقت النشر اليومي</label>
+          <input type="time" id="publish-time" class="w-full px-3 py-2 rounded-md border border-gray-300 focus:ring-indigo-500 focus:border-indigo-500" />
+          <p class="text-xs text-gray-500 mt-1">اختر توقيتًا في اليوم. سيتم تحويله إلى نمط Cron تلقائيًا.</p>
+        </div>
+        <button id="save-auto-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg" onclick="saveAutoSettings()">حفظ الإعدادات</button>
+      </div>
+    </div>
+
+    <div id="manual-section" class="hidden">
+      <div class="bg-white rounded-2xl shadow p-6">
+        <h2 class="text-2xl font-bold mb-4 text-indigo-700">الإنتاج اليدوي</h2>
+        <div class="mb-4">
+          <label class="block mb-1 text-sm font-medium text-gray-700">موضوع الفيديو (بالإنكليزية)</label>
+          <div class="flex gap-2 rtl:space-x-reverse">
+            <input type="text" id="video-topic" placeholder="wild west legend" class="flex-grow px-3 py-2 rounded-md border border-gray-300 focus:ring-indigo-500 focus:border-indigo-500" />
+            <button class="px-4 py-2 bg-amber-400 hover:bg-amber-300 text-gray-900 font-bold rounded-md flex items-center" onclick="generateTopic()">
+              <i data-lucide="sparkles" class="w-4 h-4 mr-1"></i> توليد
+            </button>
+          </div>
+        </div>
+        <div class="mb-4">
+          <label class="block mb-1 text-sm font-medium text-gray-700">الخصوصية</label>
+          <select id="privacy-mode" class="w-full px-3 py-2 rounded-md border border-gray-300 focus:ring-indigo-500 focus:border-indigo-500">
+            <option value="public">عام</option>
+            <option value="unlisted">غير مدرج</option>
+          </select>
+        </div>
+        <div class="mb-4">
+          <label class="block mb-1 text-sm font-medium text-gray-700">المدة</label>
+          <input type="text" value="15 ثانية (ثابت)" readonly class="w-full px-3 py-2 rounded-md border border-gray-200 bg-gray-100 text-gray-500" />
+        </div>
+        <button id="manual-generate-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-lg" onclick="startManual()">إنتاج الفيديو الآن</button>
+      </div>
+    </div>
+
+    <div id="settings-section" class="hidden">
+      <div class="bg-white rounded-2xl shadow p-6">
+        <h2 class="text-2xl font-bold mb-4 text-indigo-700">الإعدادات العامة</h2>
+        <p class="text-sm text-gray-600 mb-4">
+          هنا يمكنك تغيير إعدادات وقت النشر التلقائي والخصوصية الافتراضية. لإعادة ربط حساب يوتيوب، اضغط الزر أدناه.
+        </p>
+        <button class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg" onclick="window.location.href='/auth'">
+          <i data-lucide="youtube" class="w-5 h-5 mr-1 inline-block"></i> ربط حساب يوتيوب
+        </button>
+      </div>
+    </div>
+
+    <!-- Progress section -->
+    <div id="progress-section" class="hidden mt-8">
+      <div class="bg-white rounded-2xl shadow p-6">
+        <h3 class="text-xl font-bold mb-3 text-indigo-700">شريط التقدّم</h3>
+        <div class="w-full bg-gray-200 rounded-full h-3 mb-4">
+          <div id="progress-bar" class="bg-indigo-500 h-3 rounded-full transition-all" style="width: 0%;"></div>
+        </div>
+        <div class="space-y-3 text-sm" id="progress-steps">
+          <!-- Steps will be inserted here -->
+        </div>
+        <p id="success-message" class="mt-3 text-green-700 font-medium hidden"></p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Navigation and mode handling
+    const modes = ['home','auto','manual','settings'];
+    function setMode(mode) {
+      modes.forEach(m => {
+        document.getElementById(`${m}-section`).classList.add('hidden');
+        document.getElementById(`nav-${m}`).classList.remove('bg-indigo-100','text-indigo-800');
+      });
+      document.getElementById(`${mode}-section`).classList.remove('hidden');
+      document.getElementById(`nav-${mode}`).classList.add('bg-indigo-100','text-indigo-800');
+      // Hide progress bar when switching
+      if (mode !== 'manual') {
+        document.getElementById('progress-section').classList.add('hidden');
+      }
+    }
+
+    // Show a message in the message-box; type: info|success|error
+    function showMessage(text, type='info') {
+      const box = document.getElementById('message-box');
+      if (!text) {
+        box.classList.add('hidden');
+        return;
+      }
+      box.textContent = text;
+      box.classList.remove('hidden');
+      const baseClasses = 'p-3 mb-4 rounded-xl text-center font-semibold';
+      let extra;
+      if (type === 'error') extra = 'bg-red-100 text-red-700 border border-red-300';
+      else if (type === 'success') extra = 'bg-green-100 text-green-700 border border-green-300';
+      else extra = 'bg-indigo-100 text-indigo-800 border border-indigo-300';
+      box.className = `${baseClasses} ${extra}`;
+    }
+
+    // Parse cron expression from placeholder and set time input
+    function initAutoTime() {
+      const cron = '__AUTO_SCHEDULE__';
+      const parts = cron.split(' ');
+      let hh = '14';
+      let mm = '00';
+      if (parts.length === 5) {
+        // mm hh * * *
+        mm = parts[0]; hh = parts[1];
+      } else if (parts.length === 6) {
+        // ss mm hh * * *
+        mm = parts[1]; hh = parts[2];
+      }
+      document.getElementById('publish-time').value = String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0');
+    }
+
+    // Save automatic schedule settings
+    async function saveAutoSettings() {
+      const t = document.getElementById('publish-time').value || '16:00';
+      const [h,m] = t.split(':');
+      // Use 6-field cron: seconds minutes hours * * *
+      const cronExpr = `0 ${m} ${h} * * *`;
+      const body = new URLSearchParams({ autoScheduleCron: cronExpr, autoEnabled: 'true' });
+      try {
+        const res = await fetch('/settings', { method:'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+        const txt = await res.text();
+        showMessage(txt, 'success');
+      } catch (err) {
+        showMessage('تعذر حفظ الإعدادات: ' + err.message, 'error');
+      }
+    }
+
+    // Generate random topic via API
+    async function generateTopic() {
+      try {
+        const res = await fetch('/generate-topic');
+        const html = await res.text();
+        // Extract value attribute from returned input element
+        const match = html.match(/value="([^"]*)"/);
+        if (match) document.getElementById('video-topic').value = match[1];
+        showMessage('تم توليد موضوع', 'info');
+      } catch (err) {
+        showMessage('فشل توليد الموضوع', 'error');
+      }
+    }
+
+    // Steps definition for progress
+    const steps = [
+      { id:'clips', label:'تجميع المقاطع' },
+      { id:'caption', label:'كتابة الكابتشن' },
+      { id:'compose', label:'إنشاء الفيديو' },
+      { id:'prepare', label:'تجهيز الفيديو' },
+      { id:'upload', label:'رفع الفيديو' }
+    ];
+    // Initialize progress steps list
+    function initProgressSteps() {
+      const container = document.getElementById('progress-steps');
+      container.innerHTML = '';
+      for (const step of steps) {
+        const row = document.createElement('div');
+        row.id = 'step-' + step.id;
+        row.className = 'flex items-center text-gray-600';
+        const bullet = document.createElement('div');
+        bullet.className = 'w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center text-xs font-bold mr-2';
+        bullet.innerHTML = '<span>' + step.label.charAt(0) + '</span>';
+        const label = document.createElement('span');
+        label.textContent = step.label;
+        label.className = 'flex-1';
+        const pct = document.createElement('span');
+        pct.id = 'pct-' + step.id;
+        pct.textContent = '0%';
+        pct.className = 'text-xs text-gray-500';
+        row.appendChild(bullet);
+        row.appendChild(label);
+        row.appendChild(pct);
+        container.appendChild(row);
+      }
+    }
+
+    function updateStepProgress(id, pct) {
+      const percent = Math.round(pct);
+      const span = document.getElementById('pct-' + id);
+      if (span) span.textContent = percent + '%';
+      const row = document.getElementById('step-' + id);
+      if (!row) return;
+      // update colors
+      if (percent >= 100) {
+        row.classList.remove('text-indigo-600');
+        row.classList.add('text-green-600');
+      } else {
+        row.classList.add('text-indigo-600');
+      }
+    }
+
+    // Start manual process: validate input, call /generate
+    async function startManual() {
+      const topic = document.getElementById('video-topic').value.trim();
+      const privacy = document.getElementById('privacy-mode').value;
+      if (!topic) {
+        showMessage('أدخل موضوع الفيديو أولاً.', 'error');
+        return;
+      }
+      try {
+        // Show progress container
+        document.getElementById('progress-section').classList.remove('hidden');
+        document.getElementById('success-message').classList.add('hidden');
+        initProgressSteps();
+        document.getElementById('progress-bar').style.width = '0%';
+        showMessage('جاري بدء العملية...', 'info');
+        const body = new URLSearchParams({ topic, privacy });
+        const res = await fetch('/generate', { method:'POST', headers:{ 'Content-Type':'application/x-www-form-urlencoded' }, body });
+        const text = await res.text();
+        showMessage(text, 'info');
+      } catch (err) {
+        showMessage('فشل بدء العملية: ' + err.message, 'error');
+      }
+    }
+
+    // SSE initialization
+    function initSSE() {
+      const es = new EventSource('/events');
+      es.onmessage = ev => {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data.type === 'progress') {
+            // update progress bar and steps
+            document.getElementById('progress-bar').style.width = Math.min(100, data.percent) + '%';
+            updateStepProgress(data.stepId, data.percent);
+          } else if (data.type === 'done') {
+            document.getElementById('progress-bar').style.width = '100%';
+            document.getElementById('success-message').textContent = 'تم الرفع: ' + data.url;
+            document.getElementById('success-message').classList.remove('hidden');
+            showMessage('', '');
+          } else if (data.type === 'error') {
+            showMessage(data.message, 'error');
+          }
+        } catch (err) {
+          console.error('Error processing SSE event:', err);
+        }
+      };
+    }
+
+    // On page load
+    window.addEventListener('DOMContentLoaded', () => {
+      initAutoTime();
+      initSSE();
+      // default mode
+      setMode('manual');
+      // load lucide icons after DOM update
+      lucide.createIcons();
+    });
+  </script>
+</body>
+</html>
