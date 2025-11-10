@@ -4,28 +4,27 @@ import fs from 'node:fs/promises';
 import { existsSync, createReadStream } from 'node:fs';
 import { google } from 'googleapis';
 import ffmpeg from 'fluent-ffmpeg';
-import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import ffmpegStatic from 'ffmpeg-static';
 import { fetch as undiciFetch } from 'undici';
 import cron from 'node-cron';
 
-// -----------------------------------------------------------------------------
-// Environment loader (.env بدون dotenv)
+/* --------------------------- ENV LOADER (no dotenv) ------------------------ */
 async function loadEnv() {
   const envPath = path.join(process.cwd(), '.env');
   try {
     const content = await fs.readFile(envPath, 'utf8');
     for (const line of content.split(/\r?\n/)) {
       if (!line || line.trim().startsWith('#') || !line.includes('=')) continue;
-      const idx = line.indexOf('=');
-      const key = line.slice(0, idx).trim();
-      const value = line.slice(idx + 1).trim();
-      if (!(key in process.env)) process.env[key] = value;
+      const i = line.indexOf('=');
+      const k = line.slice(0, i).trim();
+      const v = line.slice(i + 1).trim();
+      if (!(k in process.env)) process.env[k] = v;
     }
-  } catch { /* ignore */ }
+  } catch {}
 }
 await loadEnv();
 
-// الإعدادات
+/* ------------------------------- CONFIG ----------------------------------- */
 const {
   PEXELS_API_KEY,
   YOUTUBE_CLIENT_ID,
@@ -39,7 +38,7 @@ const {
   VOICEOVER_ENABLED = 'false'
 } = process.env;
 
-// OAuth2
+/* --------------------------- GOOGLE OAUTH2 --------------------------------- */
 const oauth2Client = new google.auth.OAuth2(
   YOUTUBE_CLIENT_ID,
   YOUTUBE_CLIENT_SECRET,
@@ -60,20 +59,20 @@ async function saveToken(token) {
 }
 await loadSavedToken();
 
-// Express
+/* -------------------------------- APP ------------------------------------- */
 const app = express();
 const PORT = process.env.PORT || 3000;
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use('/public', express.static(path.join(process.cwd(), 'public')));
 
-// حالة الواجهة
 let statusLog = 'لم يتم تشغيل أي عملية بعد.';
 
-// إعدادات محفوظة
+/* ---------------------------- SETTINGS PERSIST ----------------------------- */
 const SETTINGS_PATH = path.join(process.cwd(), 'tmp', 'settings.json');
 let settings = {
-  autoEnabled: AUTO_ENABLED.toLowerCase() === 'true',
+  autoEnabled: (AUTO_ENABLED || 'false').toLowerCase() === 'true',
   autoScheduleCron: AUTO_SCHEDULE_CRON
 };
 async function loadSettings() {
@@ -81,7 +80,7 @@ async function loadSettings() {
     const data = JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf8'));
     if (typeof data.autoEnabled === 'boolean') settings.autoEnabled = data.autoEnabled;
     if (data.autoScheduleCron) settings.autoScheduleCron = data.autoScheduleCron;
-  } catch { /* ignore */ }
+  } catch {}
 }
 async function saveSettings() {
   await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true });
@@ -89,30 +88,27 @@ async function saveSettings() {
 }
 await loadSettings();
 
-// إعداد ffmpeg مع فولباك آمن لـ Render
-{
-  const candidates = [
-    ffmpegInstaller?.path,
-    process.env.FFMPEG_PATH,
-    '/usr/bin/ffmpeg',
-    '/usr/local/bin/ffmpeg'
-  ].filter(Boolean);
-  let set = false;
-  for (const p of candidates) {
-    try { ffmpeg.setFfmpegPath(p); set = true; break; } catch {}
-  }
-  if (!set) console.error('FFmpeg path not set. Check @ffmpeg-installer/ffmpeg install.');
-}
+/* ------------------------------ FFMPEG SETUP ------------------------------ */
+ffmpeg.setFfmpegPath(ffmpegStatic);
 
-// مواضيع
+// خط محلي مطلوب لتفادي Invalid argument في drawtext
+const FONT_PATH = path.join(process.cwd(), 'public', 'fonts', 'DejaVuSans-Bold.ttf');
+const FONT_FILE = FONT_PATH.replace(/\\/g, '/');
+
+/* ------------------------------ TOPICS/CAPTIONS --------------------------- */
 const RANDOM_TOPICS = [
-  'civil rights moments','jazz age streets','route 66 nights','gold rush tale',
-  'brooklyn 1920s','american vintage street','dust bowl memories',
-  'harlem renaissance vibes','great depression life','wild west legend'
+  'civil rights moments',
+  'jazz age streets',
+  'route 66 nights',
+  'gold rush tale',
+  'brooklyn 1920s',
+  'american vintage street',
+  'dust bowl memories',
+  'harlem renaissance vibes',
+  'great depression life',
+  'wild west legend'
 ];
 const pickRandomTopic = () => RANDOM_TOPICS[Math.floor(Math.random() * RANDOM_TOPICS.length)];
-
-// كابتشن
 function generateCaption(topic) {
   const base = `Echoes from ${topic}.`;
   const tags = ['#history', '#USA', '#vintage', '#shorts'];
@@ -122,16 +118,33 @@ function generateCaption(topic) {
 }
 const ffEscape = s => s.replace(/'/g, "\\'").replace(/:/g, '\\:');
 
-// SSE
+/* ----------------------------- SSE PROGRESS ------------------------------- */
 const sseClients = new Set();
-const sendSSE = (res, data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-const broadcast = (type, payload) => { for (const c of sseClients) sendSSE(c, { type, ...payload, ts: Date.now() }); };
+function sendSSE(res, data) { res.write(`data: ${JSON.stringify(data)}\n\n`); }
+function broadcastProgress(stepId, label, percent) {
+  const payload = { type: 'progress', stepId, label, percent, ts: Date.now() };
+  for (const c of sseClients) sendSSE(c, payload);
+}
+function broadcastDone(url) {
+  const payload = { type: 'done', url, ts: Date.now() };
+  for (const c of sseClients) sendSSE(c, payload);
+}
+function broadcastError(message) {
+  const payload = { type: 'error', message, ts: Date.now() };
+  for (const c of sseClients) sendSSE(c, payload);
+}
 app.get('/events', (req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-  res.write('\n'); sseClients.add(res); req.on('close', () => sseClients.delete(res));
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive'
+  });
+  res.write('\n');
+  sseClients.add(res);
+  req.on('close', () => sseClients.delete(res));
 });
 
-// Pexels
+/* ------------------------------- PEXELS ----------------------------------- */
 async function pexelsSearch(query, perPage = 40) {
   const url = new URL('https://api.pexels.com/videos/search');
   url.searchParams.set('query', query);
@@ -156,112 +169,168 @@ async function ensureBgMusic() {
   if (!BG_MUSIC_URL) return null;
   if (bgMusicPath && existsSync(bgMusicPath)) return bgMusicPath;
   const dest = path.join(process.cwd(), 'tmp', 'bg_music.mp3');
-  try { await downloadToFile(BG_MUSIC_URL, dest); bgMusicPath = dest; return dest; }
-  catch { return null; }
+  try {
+    await downloadToFile(BG_MUSIC_URL, dest);
+    bgMusicPath = dest;
+    return bgMusicPath;
+  } catch (e) {
+    console.error('BG music download failed:', e.message);
+    return null;
+  }
 }
 async function fetchClipsForTopic(topic) {
-  broadcast('progress', { stepId: 'clips', label: 'تجميع المقاطع', percent: 5 });
-  const queries = ['historic reenactment','american history','vintage archive','classic city street','civil rights march','retro footage','old film', topic];
+  broadcastProgress('clips', 'تجميع المقاطع', 5);
+  const queries = [
+    'historic reenactment','american history','vintage archive','classic city street',
+    'civil rights march','retro footage','old film', topic
+  ];
   const chosen = [];
   for (const q of queries) {
     try {
       const results = await pexelsSearch(q);
-      for (const v of results) {
-        const { width, height, video_files: files, duration } = v;
+      for (const video of results) {
+        const { width, height, video_files: files, duration } = video;
         if (height < width) continue;
-        let f = files.find(x => x.quality === 'hd' && x.width >= 720) || files.find(x => x.width >= 480) || files[0];
-        if (!f) continue;
-        chosen.push({ url: f.link, duration });
+        let file = files.find(vf => vf.quality === 'hd' && vf.width >= 720) ||
+                   files.find(vf => vf.width >= 480) || files[0];
+        if (!file) continue;
+        chosen.push({ url: file.link, duration });
         if (chosen.length >= 8) break;
       }
-    } catch {}
+    } catch (e) {
+      console.error('Pexels search error:', e.message);
+    }
     if (chosen.length >= 8) break;
   }
   if (chosen.length < 6) throw new Error('لا توجد مقاطع كافية من Pexels');
   const clipPaths = [];
   let i = 0;
-  for (const it of chosen) {
+  for (const item of chosen) {
     const dest = path.join(process.cwd(), 'tmp', `clip_${Date.now()}_${i++}.mp4`);
-    await downloadToFile(it.url, dest);
-    clipPaths.push({ path: dest, duration: it.duration });
+    await downloadToFile(item.url, dest);
+    clipPaths.push({ path: dest, duration: item.duration });
     const pct = Math.min(30, 5 + Math.round((clipPaths.length / chosen.length) * 25));
-    broadcast('progress', { stepId: 'clips', label: 'تجميع المقاطع', percent: pct });
+    broadcastProgress('clips', 'تجميع المقاطع', pct);
   }
   return clipPaths;
 }
 
-// صنع الفيديو 15s
+/* --------------------------- VIDEO COMPOSITION ---------------------------- */
 async function createVideo(clips, title) {
-  const xfadeDur = 0.35, totalDur = 15.0;
+  const xfadeDur = 0.35;
+  const totalDur = 15.0;
   const count = Math.min(clips.length, 6);
   const used = clips.slice(0, count);
   const segDur = Number(((totalDur + xfadeDur * (count - 1)) / count).toFixed(3));
-  const offsets = []; for (let i=0;i<count;i++) offsets.push(i===0?0:Number((offsets[i-1]+segDur-xfadeDur).toFixed(3)));
-  const escTitle = ffEscape(title);
+  const offsets = [];
+  for (let i = 0; i < count; i++) offsets.push(i === 0 ? 0 : Number((offsets[i - 1] + segDur - xfadeDur).toFixed(3)));
+
   const filters = [];
-  for (let i=0;i<count;i++) {
-    filters.push(`[${i}:v]trim=0:${segDur},setpts=PTS-STARTPTS,scale=1080:-2,crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2[v${i}]`);
+  const escTitle = ffEscape(title);
+  for (let i = 0; i < count; i++) {
+    filters.push(
+      `[${i}:v]trim=0:${segDur},setpts=PTS-STARTPTS,scale=1080:-2,crop=1080:1920:(in_w-1080)/2:(in_h-1920)/2[v${i}]`
+    );
   }
-  let current='[v0]';
-  for (let i=1;i<count;i++){ const out=i===count-1?'[vtmp]':`[vxf${i}]`; filters.push(`${current}[v${i}]xfade=transition=fade:duration=${xfadeDur}:offset=${offsets[i]}${out}`); current=out; }
+  let current = '[v0]';
+  for (let i = 1; i < count; i++) {
+    const out = i === count - 1 ? '[vtmp]' : `[vxf${i}]`;
+    filters.push(`${current}[v${i}]xfade=transition=fade:duration=${xfadeDur}:offset=${offsets[i]}${out}`);
+    current = out;
+  }
+
+  // نصوص مع fontfile محلي
   filters.push(
-    `${current}drawtext=text='${escTitle}':fontcolor=Lavender:fontsize=80:font=DejaVuSans-Bold:box=1:boxcolor=black@0.4:boxborderw=10:` +
-    `x=(w-text_w)/2:y=h*0.28+sin(2*PI*t/3)*20:shadowcolor=black:shadowx=5:shadowy=5:enable='between(t,0.3,3)'[vtxt1]`
+    `${current}drawtext=text='${escTitle}':fontfile='${FONT_FILE}':fontcolor=Lavender:fontsize=80:` +
+    `box=1:boxcolor=black@0.4:boxborderw=10:` +
+    `x=(w-text_w)/2:y=h*0.28+sin(2*PI*t/3)*20:` +
+    `shadowcolor=black:shadowx=5:shadowy=5:enable='between(t,0.3,3)'[vtxt1]`
   );
   filters.push(
-    `[vtxt1]drawtext=text='American Short Story':fontcolor=Lavender:fontsize=40:font=DejaVuSans-Bold:box=1:boxcolor=black@0.4:boxborderw=8:` +
+    `[vtxt1]drawtext=text='American Short Story':fontfile='${FONT_FILE}':fontcolor=Lavender:fontsize=40:` +
+    `box=1:boxcolor=black@0.4:boxborderw=8:` +
     `x=(w-text_w)/2:y=h*0.28+100:enable='between(t,0.6,2.8)'[vfinal]`
   );
+
   const cmd = ffmpeg();
-  for (const c of used) { cmd.input(c.path); cmd.inputOptions('-an'); }
-  const music = await ensureBgMusic(); if (music) cmd.input(music);
+  for (const clip of used) { cmd.input(clip.path); cmd.inputOptions('-an'); }
+  const music = await ensureBgMusic();
+  if (music) cmd.input(music);
+
   cmd.complexFilter(filters, 'vfinal');
-  if (music) cmd.outputOptions(['-map','[vfinal]','-map',`${used.length}:a`,'-c:a','aac','-b:a','128k','-filter:a','volume=0.15','-shortest']);
-  else { cmd.outputOptions(['-map','[vfinal]']); cmd.outputOptions('-an'); }
-  cmd.outputOptions(['-c:v','libx264','-profile:v','main','-crf','23','-preset','veryfast','-pix_fmt','yuv420p','-r','30','-t',`${totalDur}`,'-movflags','+faststart']);
+  if (music) {
+    cmd.outputOptions([
+      '-map', '[vfinal]', '-map', `${used.length}:a`,
+      '-c:a', 'aac', '-b:a', '128k', '-filter:a', 'volume=0.15', '-shortest'
+    ]);
+  } else {
+    cmd.outputOptions(['-map', '[vfinal]']); cmd.outputOptions('-an');
+  }
+  cmd.outputOptions([
+    '-c:v','libx264','-profile:v','main','-crf','23','-preset','veryfast',
+    '-pix_fmt','yuv420p','-r','30','-t',`${totalDur}`,'-movflags','+faststart'
+  ]);
+
   const outPath = path.join(process.cwd(), 'tmp', `out_${Date.now()}.mp4`);
+
+  // لوجات تشخيصية
+  cmd.on('stderr', line => console.log('ffmpeg:', line));
+
   await new Promise((resolve, reject) => {
-    let last = 35;
+    let lastPct = 35;
     cmd.on('progress', p => {
       if (p.percent) {
         const pct = Math.max(35, Math.min(75, 35 + Math.round(p.percent * 0.4)));
-        if (pct !== last) { last = pct; broadcast('progress', { stepId:'compose', label:'إنشاء الفيديو', percent:pct }); }
+        if (pct !== lastPct) { lastPct = pct; broadcastProgress('compose','إنشاء الفيديو', pct); }
       }
     });
-    cmd.on('error', reject); cmd.on('end', resolve); cmd.save(outPath);
+    cmd.on('error', reject);
+    cmd.on('end', resolve);
+    cmd.save(outPath);
   });
-  broadcast('progress', { stepId: 'prepare', label: 'تجهيز الفيديو', percent: 82 });
+
+  broadcastProgress('prepare', 'تجهيز الفيديو', 82);
   return outPath;
 }
 
-// رفع يوتيوب
+/* ------------------------------- UPLOAD ----------------------------------- */
 async function uploadToYouTube(filePath, title, caption, privacy) {
-  broadcast('progress', { stepId: 'upload', label: 'رفع الفيديو', percent: 85 });
+  broadcastProgress('upload', 'رفع الفيديو', 85);
   const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-  const tags = ['shorts','history','USA','vintage','story'];
-  const requestBody = { snippet: { title: title.slice(0,60), description: caption + '\nGenerated 9:16 automatically.', tags }, status: { privacyStatus: privacy || DEFAULT_PRIVACY } };
-  const res = await youtube.videos.insert({ part: ['snippet','status'], requestBody, media: { body: createReadStream(filePath) } });
-  broadcast('progress', { stepId: 'upload', label: 'رفع الفيديو', percent: 98 });
+  const tags = ['shorts', 'history', 'USA', 'vintage', 'story'];
+  const requestBody = {
+    snippet: { title: title.slice(0, 60), description: caption + '\nGenerated 9:16 automatically.', tags },
+    status: { privacyStatus: privacy || DEFAULT_PRIVACY }
+  };
+  const res = await youtube.videos.insert({
+    part: ['snippet', 'status'],
+    requestBody,
+    media: { body: createReadStream(filePath) }
+  });
+  broadcastProgress('upload', 'رفع الفيديو', 98);
   return res.data.id;
 }
 
-// بايبلاين كامل
+/* ------------------------------- PIPELINE --------------------------------- */
 async function generateAndUpload({ topic, privacy }) {
   const finalTopic = topic && topic.trim() ? topic.trim() : pickRandomTopic();
   const title = `Short American Story — ${finalTopic}`;
   const clips = await fetchClipsForTopic(finalTopic);
-  broadcast('progress', { stepId:'caption', label:'كتابة الكابتشن', percent:32 });
+  broadcastProgress('caption', 'كتابة الكابتشن', 32);
   const caption = generateCaption(finalTopic);
   const videoPath = await createVideo(clips, finalTopic);
   const id = await uploadToYouTube(videoPath, title, caption, privacy);
   const url = `https://youtu.be/${id}`;
-  try { await fs.unlink(videoPath); for (const c of clips) await fs.unlink(c.path); } catch {}
-  broadcast('progress', { stepId:'upload', label:'رفع الفيديو', percent:100 });
-  broadcast('done', { url });
+  try {
+    await fs.unlink(videoPath);
+    for (const c of clips) await fs.unlink(c.path);
+  } catch {}
+  broadcastProgress('upload', 'رفع الفيديو', 100);
+  broadcastDone(url);
   return { message: 'تم الرفع بنجاح', url };
 }
 
-// كرون
+/* --------------------------------- CRON ----------------------------------- */
 let cronJob = null;
 function scheduleAutoJob() {
   if (cronJob) { cronJob.stop(); cronJob = null; }
@@ -269,59 +338,67 @@ function scheduleAutoJob() {
   cronJob = cron.schedule(settings.autoScheduleCron, async () => {
     try {
       if (!oauth2Client.credentials || !oauth2Client.credentials.access_token) {
-        statusLog = 'يرجى ربط يوتيوب أولًا.'; broadcast('error', { message: statusLog }); return;
+        statusLog = 'يرجى ربط يوتيوب أولًا.'; broadcastError(statusLog); return;
       }
-      const result = await generateAndUpload({ topic:'', privacy: DEFAULT_PRIVACY });
+      const result = await generateAndUpload({ topic: '', privacy: DEFAULT_PRIVACY });
       statusLog = `${new Date().toLocaleString('ar-IQ')} : ${result.message} - ${result.url}`;
-    } catch (err) {
-      statusLog = `${new Date().toLocaleString('ar-IQ')} : فشل العملية: ${err.message}`;
-      broadcast('error', { message: err.message });
+    } catch (e) {
+      statusLog = `${new Date().toLocaleString('ar-IQ')} : فشل العملية: ${e.message}`;
+      broadcastError(e.message);
     }
   }, { timezone: 'Asia/Baghdad' });
 }
 scheduleAutoJob();
 
-// واجهة
+/* --------------------------------- ROUTES --------------------------------- */
 app.get('/', async (req, res) => {
   const filePath = path.join(process.cwd(), 'views', 'index.html');
   let html = await fs.readFile(filePath, 'utf8');
-  html = html.replace(/__AUTO_SCHEDULE__/g, settings.autoScheduleCron)
-             .replace(/__AUTO_ENABLED_SELECTED_TRUE__/g, settings.autoEnabled ? 'selected' : '')
-             .replace(/__AUTO_ENABLED_SELECTED_FALSE__/g, settings.autoEnabled ? '' : 'selected')
-             .replace(/__STATUS__/g, statusLog);
-  res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.send(html);
+  html = html.replace(/__AUTO_SCHEDULE__/g, settings.autoScheduleCron);
+  html = html.replace(/__AUTO_ENABLED_SELECTED_TRUE__/g, settings.autoEnabled ? 'selected' : '');
+  html = html.replace(/__AUTO_ENABLED_SELECTED_FALSE__/g, settings.autoEnabled ? '' : 'selected');
+  html = html.replace(/__STATUS__/g, statusLog);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
 });
 
-// OAuth
 app.get('/auth', (req, res) => {
   const scopes = ['https://www.googleapis.com/auth/youtube.upload'];
-  res.redirect(oauth2Client.generateAuthUrl({ access_type: 'offline', scope: scopes }));
-});
-app.get('/oauth2callback', async (req, res) => {
-  const code = req.query.code; if (!code) return res.status(400).send('Missing code');
-  try {
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens); await saveToken(tokens);
-    statusLog = 'تم الربط بحساب يوتيوب بنجاح.'; res.redirect('/');
-  } catch (err) { res.status(500).send('OAuth error: ' + err.message); }
+  const url = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: scopes });
+  res.redirect(url);
 });
 
-// إعدادات
+app.get('/oauth2callback', async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.status(400).send('Missing code');
+  try {
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+    await saveToken(tokens);
+    statusLog = 'تم الربط بحساب يوتيوب بنجاح.';
+    res.redirect('/');
+  } catch (e) {
+    res.status(500).send('OAuth error: ' + e.message);
+  }
+});
+
 app.post('/settings', async (req, res) => {
   const { autoScheduleCron, autoEnabled } = req.body;
   if (autoScheduleCron) settings.autoScheduleCron = autoScheduleCron.trim();
-  settings.autoEnabled = autoEnabled === 'true'; await saveSettings(); scheduleAutoJob();
-  res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.send('تم حفظ الإعدادات بنجاح');
+  settings.autoEnabled = autoEnabled === 'true';
+  await saveSettings();
+  scheduleAutoJob();
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send('تم حفظ الإعدادات بنجاح');
 });
 
-// توليد موضوع
 app.get('/generate-topic', (req, res) => {
   const t = pickRandomTopic();
   const html = `<input type="text" name="topic" id="video-topic" placeholder="wild west legend" class="flex-grow p-3 rounded-xl bg-gray-700 border border-gray-600 focus:ring-indigo-500 focus:border-indigo-500" value="${t}" />`;
-  res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.send(html);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
 });
 
-// تشغيل يدوي
 app.post('/generate', async (req, res) => {
   if (!oauth2Client.credentials || !oauth2Client.credentials.access_token) {
     const scopes = ['https://www.googleapis.com/auth/youtube.upload'];
@@ -331,10 +408,20 @@ app.post('/generate', async (req, res) => {
   const topic = (req.body.topic || '').trim();
   const privacy = (req.body.privacy || DEFAULT_PRIVACY).trim();
   (async () => {
-    try { await generateAndUpload({ topic, privacy }); statusLog = `${new Date().toLocaleString('ar-IQ')} : تم الرفع بنجاح`; }
-    catch (err) { statusLog = `${new Date().toLocaleString('ar-IQ')} : فشل العملية: ${err.message}`; broadcast('error', { message: err.message }); }
+    try {
+      await generateAndUpload({ topic, privacy });
+      statusLog = `${new Date().toLocaleString('ar-IQ')} : تم الرفع بنجاح`;
+    } catch (e) {
+      statusLog = `${new Date().toLocaleString('ar-IQ')} : فشل العملية: ${e.message}`;
+      broadcastError(e.message);
+    }
   })();
-  res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.send('بدأت العملية... تابع شريط التقدم بالأعلى.');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send('بدأت العملية... تابع شريط التقدم بالأعلى.');
 });
 
-app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
+/* --------------------------------- START ---------------------------------- */
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+  console.log(`Using font file at: ${FONT_FILE} ${existsSync(FONT_FILE) ? '(FOUND)' : '(MISSING!)'}`);
+});
